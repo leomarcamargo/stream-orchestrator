@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/StreamOrchestrator.AppHost/StreamOrchestrator.AppHost.csproj" />
+    <Project Path="src/StreamOrchestrator.ServiceDefaults/StreamOrchestrator.ServiceDefaults.csproj" />
+    <Project Path="src/StreamOrchestrator.Web/StreamOrchestrator.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/StreamOrchestrator.IntegrationTests/StreamOrchestrator.IntegrationTests.csproj" />
+    <Project Path="tests/StreamOrchestrator.UnitTests/StreamOrchestrator.UnitTests.csproj" />
+  </Folder>
+</Solution>

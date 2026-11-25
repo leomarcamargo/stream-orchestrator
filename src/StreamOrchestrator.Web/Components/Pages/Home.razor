@@ -1,0 +1,198 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject SessionOrchestrator Orchestrator
+
+<PageTitle>Stream Orchestrator</PageTitle>
+
+<main class="dashboard">
+    <header class="page-header">
+        <h1>Stream Orchestrator</h1>
+        <span class="run-state @StateClass">@StateText</span>
+    </header>
+
+    <section class="card">
+        <h2>Execution</h2>
+        <div class="form-grid">
+            <label>Sessions
+                <input type="number" min="1" max="@Orchestrator.Limits.MaxSessions" @bind="sessionCount" disabled="@IsRunning" />
+            </label>
+            <label>Max concurrent sessions
+                <input type="number" min="1" max="@Orchestrator.Limits.MaxSessions" @bind="maxConcurrency" disabled="@IsRunning" />
+            </label>
+            <label>Duration per session (s)
+                <input type="number" min="1" max="@Orchestrator.Limits.MaxDurationSeconds" @bind="durationSeconds" disabled="@IsRunning" />
+            </label>
+            <label>Injected failures (%)
+                <input type="number" min="0" max="100" @bind="failureRate" disabled="@IsRunning" />
+            </label>
+            <div class="actions">
+                <button class="btn primary" @onclick="Start" disabled="@IsRunning">Start</button>
+                <button class="btn danger" @onclick="Cancel" disabled="@(!IsRunning)">Cancel</button>
+            </div>
+        </div>
+        @if (error is not null)
+        {
+            <p class="error-message" role="alert">@error</p>
+        }
+        <p class="hint">
+            Playback type: local media consumption. Each session reads an in-memory test media file in
+            chunks, verifies its SHA-256 checksum and paces the reads to the configured duration.
+            The sessions do not contact YouTube, Spotify or any other platform and no public counters are affected.
+        </p>
+    </section>
+
+    <section>
+        <h2>Summary</h2>
+        <div class="tiles">
+            <Tile Label="Total Sessions" Value="@summary.Total.ToString()" />
+            <Tile Label="Started Sessions" Value="@summary.Started.ToString()" />
+            <Tile Label="Active Sessions" Value="@summary.Active.ToString()" Kind="playing" />
+            <Tile Label="Completed Sessions" Value="@summary.Completed.ToString()" Kind="completed" />
+            <Tile Label="Failed Sessions" Value="@summary.Failed.ToString()" Kind="failed" />
+            <Tile Label="Cancelled Sessions" Value="@summary.Cancelled.ToString()" Kind="cancelled" />
+            <Tile Label="Peak Concurrency" Value="@summary.PeakConcurrency.ToString()" />
+            <Tile Label="Elapsed Time" Value="@FormatElapsed(summary.Elapsed)" />
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>Sessions</h2>
+        @if (sessions.Count == 0)
+        {
+            <p class="hint">No run yet. Start an execution to see its sessions.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Session ID</th>
+                            <th>Status</th>
+                            <th>Progress</th>
+                            <th>Started At</th>
+                            <th>Completed At</th>
+                            <th>Error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var session in sessions)
+                        {
+                            <tr @key="session.Id">
+                                <td>@session.Id</td>
+                                <td><span class="badge @session.Status.ToString().ToLowerInvariant()">@session.Status</span></td>
+                                <td>
+                                    <div class="progress" title="@session.Progress%">
+                                        <div class="progress-bar @session.Status.ToString().ToLowerInvariant()" style="width:@(session.Progress)%"></div>
+                                    </div>
+                                </td>
+                                <td>@FormatTime(session.StartedAt)</td>
+                                <td>@FormatTime(session.CompletedAt)</td>
+                                <td class="error-cell">@session.Error</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    <YouTubeDemo />
+</main>
+
+@code {
+    private static readonly RunSummary EmptySummary = new(
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        TimeSpan.Zero,
+        true
+    );
+
+    private readonly CancellationTokenSource disposed = new();
+    private int sessionCount;
+    private int maxConcurrency;
+    private int durationSeconds;
+    private int failureRate;
+    private string? error;
+    private RunSummary summary = EmptySummary;
+    private IReadOnlyList<SessionSnapshot> sessions = [];
+
+    private bool IsRunning => !summary.IsFinished;
+    private string StateText => sessions.Count == 0 ? "Idle" : IsRunning ? "Running" : "Finished";
+    private string StateClass => StateText.ToLowerInvariant();
+
+    protected override void OnInitialized()
+    {
+        var limits = Orchestrator.Limits;
+        sessionCount = limits.DefaultSessions;
+        maxConcurrency = limits.DefaultSessions;
+        durationSeconds = limits.DefaultDurationSeconds;
+        Refresh();
+        _ = PollAsync();
+    }
+
+    private async Task PollAsync()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(disposed.Token))
+            {
+                var wasRunning = IsRunning;
+                Refresh();
+                if (wasRunning || IsRunning)
+                {
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void Refresh()
+    {
+        var snapshot = Orchestrator.CurrentRun?.Snapshot();
+        summary = snapshot?.Summary ?? EmptySummary;
+        sessions = snapshot?.Sessions ?? [];
+    }
+
+    private void Start()
+    {
+        error = null;
+        try
+        {
+            Orchestrator.Start(new RunSettings(sessionCount, maxConcurrency, durationSeconds, failureRate));
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            error = ex.Message;
+        }
+
+        Refresh();
+    }
+
+    private void Cancel()
+    {
+        Orchestrator.Cancel();
+        Refresh();
+    }
+
+    private static string FormatTime(DateTimeOffset? value) =>
+        value?.ToLocalTime().ToString("HH:mm:ss.fff") ?? "-";
+
+    private static string FormatElapsed(TimeSpan value) => value.ToString(@"hh\:mm\:ss\.f");
+
+    public void Dispose()
+    {
+        disposed.Cancel();
+        disposed.Dispose();
+    }
+}
